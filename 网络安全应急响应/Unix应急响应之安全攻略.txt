@@ -1,0 +1,369 @@
+UNIX应急响应之安全攻略
+(题记：现在开始对受害系统的每一步操作都可能改变已存在的证据或是导致敏感信息的丢失！)
+
+初始响应
+目标:在进行司法鉴定复制之前获得系统中的易失数据，初步确定突发事件概况。
+
+创建响应工具包创建响应工具包
+我们调查系统，必须以高度可信赖的程序执行命令，再加上备份与修复，创建一个工具包是很有必要的。即使在非UNIX/LINUX系统上，创建工具包也应该作为响应的第一步。
+
+首先，我们需要在对应体系结构的系统上编译响应期间需要的工具，且编译程序需要考虑系统兼容的问题。
+
+通常我们需要如下的工具：
+
+ls dd des file pkginfo
+
+find icat lsof md5sum nc
+
+netstat pcat perl ps strace
+
+strings truss df vi
+
+cat kstat ifconfig chkrootkit
+
+more gzip last w rm
+
+script bash modinfo lsmod
+
+读者可根据自己的需要自行添加，但是一个工具包通常只能用来完成对某一特定平台的工作，把对多个平台编译的工具放进同一个工具包反而会显得紊乱。在Linux上创建响应工具包时，可以用gcc的 Cstatic参数编译源代码，或者用ldd检查动态连接库，在响应工具包存储介质上建立库文件目录，并拷贝所有工具需要的动态连接库的副本，最后设置环境变量。这个过程有点类似于创建一个Linux的优盘启动盘。
+
+获取易失数据获取易失数据
+易失的数据包括：当前打开的套接字，进程列表，RAM内容，非链接文件的位置。*unix特性： unix允许进程正在执行时将其删除！ 非链接文件是访问该文件的进程中止时被标记为删除的文件。当系统关闭时（正常关机或突然断电非正常关机），标记为删除的文件都将消失。因此在找到被标记为删除的文件之前不能关机！
+
+执行可信赖的shell
+使用我们自己准备的响应工具包，装载该介质的文件系统，mount Ct auto /dev/sda1 /mnt/usb 或mount Ct iso9660 /dev/cdrom /mnt/cdrom 按下Ctrl+Alt+F1~F6,从控制台以root身份登陆。请一定要区分原环境变量中的命令和当前响应工具包的相同名字的命令集，防止潜在的二进制特洛伊木马攻击。
+
+查看登陆系统的用户
+[root@ay4z3ro foo]# w
+
+19:50:48 up 43 min, 2 users, load average: 0.00, 0.00, 0.00
+
+USER TTY LOGIN@ IDLE JCPU PCPU WHAT
+
+root :0 19:08 ?xdm? 11.10s 0.43s gnome-session
+
+root pts/0 19:08 1.00s 0.21s 0.01s w
+
+输出标题行显示了当前系统时间，该系统已运行的时间，当前登陆用户数，最近1分钟，5分钟和15分钟内的平均系统负载。 USER字段显示当前登陆的用户名。TTY字段显示了会话的控制终端，tty表示从控制台登陆，pts/typ则可以表示通过一个网络连接，因为X是个C/S模式的应用程序，所以我在GNOME下开的shell窗口显示为pts。如果不从本地登陆，输出中还有FROM字段,表示建立会话的源地址的域名或IP。LOGIN@ 显示该连接的本地开始时间。IDLE字段显示了自上一个进程运行以来的时间长度。JCPU显示与tty或pts关联的全部进程所使用的时间。PCPU字段显示了WHAT列中当前进程所使用的CPU时间。WHAT列显示用户当前运行的进程。
+
+查看系统进程列表
+Solaris中使用ps Ceaf,而在FreeBSD和Linux中则使用ps Caux.
+
+[root@ay4z3ro foo]# ps aux
+
+USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+
+root 1 0.1 0.2 1356 496 ? S 19:07 0:04 init
+
+root 2 0.0 0.0 0 0 ? SW 19:07 0:00 [keventd]
+
+root 3 0.0 0.0 0 0 ? SWN 19:07 0:00 [ksoftirqd_CPU0]
+
+root 4 0.0 0.0 0 0 ? SW 19:07 0:00 [kswapd]
+
+root 5 0.0 0.0 0 0 ? SW 19:07 0:00 [bdflush]
+
+root 6 0.0 0.0 0 0 ? SW 19:07 0:00 [kupdated]
+
+root 7 0.0 0.0 0 0 ? SW< 19:07 0:00 [mdrecoveryd]
+
+root 11 0.0 0.0 0 0 ? SW 19:07 0:00 [kjournald]
+
+root 114 0.0 0.5 2108 1304 ? S 19:07 0:00 devfsd /dev
+
+root 209 0.0 0.0 0 0 ? SW 19:07 0:00 [khubd]
+
+root 338 0.0 0.0 0 0 ? SW 19:07 0:00 [kjournald]
+
+rpc 620 0.0 0.2 1496 520 ? S 19:07 0:00 [portmap]
+
+root 636 0.0 0.2 1452 624 ? S 19:07 0:00 syslogd -m 0
+
+…………………（以下省略）
+
+Ps命令输出中的START字段显示了程序开始运行的时间，对于查出攻击时间很有帮助。有时仅通过时间就能识别可疑进程。 Linux下还可以通过strings Cf /proc/[0-9]*/cmdline来查看系统中运行进程的完整命令行参数，但是这个并不完全可信。 因为攻击者甚至不需要插入内核模块，而只在应用层的编码中加入语句就能欺骗我们。
+
+检测LKM Rootkit
+内核模块后门,还有什么比这个更臭屁的呢？Solaris,Linux和几乎所有的UNIX都支持LKM (Loadable Kernel Modules), 用普通的方法无法检测其存在，这给应急响应带来了极大的挑战性。对于我们来说，解决的办法是找到那些lkm rootkit，并熟悉，解剖他们。有时lkm rootkit虽然被成功装载，但在系统的某些细节上会出现“异常”，甚至可能使系统在运行一段时间后彻底崩溃。还有，lkm虽然活动在ring0核心态，但是攻击者往往会在系统的某处留下痕迹，比如攻击者为了让系统每次关闭或重启后能自动装入他安置的内核后门，可能会改写/etc/modules.conf或/etc/rc.local. kstat/ksec是检测lkm非常方便的工具,前者用于Linux，后者用于*BSD.
+
+[root@ay4z3ro kstat]# ./kstat
+
+Usage: ./kstat [-i iff] [-P] [-p pid] [-M] [-m addr] [-s]
+
+-i iff may be specified as "all" or as name (e.g. eth0)
+
+displays info about the queried interface
+
+-P displays all processes
+
+-p pid is the process id of the queried task
+
+-M displays the kernel"s LKMs" linked list
+
+-m addr is the hex address of the queried module
+
+displays info about the module to be found at addr
+
+-s displays info about the system calls" table
+
+其中-s参数最有用，它显示了系统调用入口的信息，能检测市面上最流行的knark和adore这两个内核后门，但理论上他并不能检测出所有的lkm rootkit. Kstat/ksec站点：http://www.s0ftpj.org 其实熟悉内核攻击的人都知道Kstat单纯检查 sys_call_table[]的方式如今已经被攻击的一方完全超越。
+
+检测开放端口和关联进程
+[root@ay4z3ro foo]# netstat Canp
+
+Active Internet connections (servers and established)
+
+Proto Recv-Q Send-Q Local Address Foreign Address State PID/Program name
+
+tcp 0 0 0.0.0.0:111 0.0.0.0:* LISTEN 620/
+
+tcp 0 0 0.0.0.0:6000 0.0.0.0:* LISTEN 908/X
+
+tcp 0 0 0.0.0.0:22 0.0.0.0:* LISTEN 880/sshd
+
+udp 0 0 0.0.0.0:111 0.0.0.0:* 620/
+
+Active UNIX domain sockets (servers and established)
+
+Proto RefCnt Flags Type State I-Node PID/Program name Path
+
+unix 2 [ ACC ] STREAM LISTENING 2753 756/ /tmp/.font-unix/fs-1
+
+……（以下省略）
+
+在Solaris,HP-UX,AIX,FreeBSD,Linux上可以使用lsof工具列举所有运行进程及其所打开的文件描述符，其中包括常规文件，库文件，目录，UNIX流，套接字等。如果只想显示网络套接字的进程：
+
+[root@ay4z3ro foo]# lsof Ci
+
+COMMAND PID USER FD TYPE DEVICE SIZE NODE NAME
+
+portmap 620 rpc 3u IPv4 2598 UDP *:sunrpc
+
+portmap 620 rpc 4u IPv4 2609 TCP *:sunrpc (LISTEN)
+
+sshd 880 root 3u IPv4 2885 TCP *:ssh (LISTEN)
+
+X 908 root 1u IPv4 2945 TCP *:x11 (LISTEN)
+
+其中特别需要注意的是奇怪的进程和已打开的原始套接字。
+
+寻找系统中是否运行一个非法嗅探器
+为了达到这个目的，我们需要检查网卡是否处于混杂(promiscuous)模式: [root@ay4z3ro foo] # ifconfig Ci eth0 　 grep PROMISC PROMISC标志并不会在所有的*NIX上出现，通过lsof+ps命令可以判断系统是否正运行一个嗅探器。或者通过第三方的工具，比如AntiSniff。
+
+检查/proc文件系统
+在/proc/$PID/目录下对于调查比较有意义的是：exe链接，fd子目录，cmdline文件。
+
+[root@ay4z3ro 880]# ls -al
+
+total 0
+
+dr-xr-xr-x 3 root root 0 Sep 20 19:53 ./
+
+dr-xr-xr-x 62 root root 0 Sep 20 15:07 ./
+
+-r--r--r-- 1 root root 0 Sep 20 19:54 binfmt
+
+-r--r--r-- 1 root root 0 Sep 20 19:54 cmdline
+
+lrwxrwxrwx 1 root root 0 Sep 20 19:54 cwd -> //
+
+-r-------- 1 root root 0 Sep 20 19:54 environ
+
+lrwxrwxrwx 1 root root 0 Sep 20 19:54 exe -> /usr/sbin/sshd*
+
+dr-x------ 2 root root 0 Sep 20 19:54 fd/
+
+-r--r--r-- 1 root root 0 Sep 20 19:54 maps
+
+-rw------- 1 root root 0 Sep 20 19:54 mem
+
+-r--r--r-- 1 root root 0 Sep 20 19:54 mounts
+
+lrwxrwxrwx 1 root root 0 Sep 20 19:54 root -> //
+
+-r--r--r-- 1 root root 0 Sep 20 19:54 stat
+
+-r--r--r-- 1 root root 0 Sep 20 19:54 statm
+
+-r--r--r-- 1 root root 0 Sep 20 19:54 status
+
+Exe链接允许我们恢复被删除的文件，只要这些文件仍然运行。为获得“已删除”可执行文件的备份，只需要使用cp命令在该文件系统上创建一个拷贝就行。通过检查fd子目录，可以识别该进程打开的所有文件。如果对unix环境下的编程有所了解的话，很容易就能发现是在读写一个文件还是打开一个网络连接。cmdline文件的内容是该进程的完整命令行。以下语句是攻击者的欺骗手段, strcpy(argv[0],”any_string”); 这样该文件就显示了一种假象，即使如此，我们仍有必要检查此文件。
+
+获取所有文件的创建，修改和访问时间
+ls CalRu > /mnt/usb/access
+
+ls CalRc > /mnt/usb/modification
+
+ls CalR > /mnt/usb/creation
+
+获取系统日志
+大多数UNIX的日志在/var/log和/var/adm目录下，各种UNIX派生系统日志的具体位置有所不同。在此之前，有必要了解针对特定系统的日志存贮位置。 比较重要的二进制日志文件：
+
+utmp,用w工具访问；
+
+wtmp,用last工具访问；
+
+lastlog,用lastlog工具访问；
+
+进程记账日志,用astcomm工具访问
+
+常见的ASCII文本日志文件：
+
+apache日志--/var/log/httpd/access_log；
+
+ftp日志—xferlog；
+
+命令历史记录文件；
+
+/var/log/messages;
+
+检查/etc/syslog.conf以及其他守护进程的配置文件以确定其余日志的位置。
+
+获取重要配置文件
+检查各配置文件查找后门位置，未授权的信任关系和未授权的用户ID。/etc/passwd，查找未授权的用户帐号和权限。初级的入侵者会添加uid=0的用户，有人也会把系统中一个不起眼的原本没有shell的普通账户改成可登陆获得shell执行命令，然后他可以通过一个suid位的 ksh或其他的安置在本地的后门马上得到rootshell.
+
+/etc/shadow,确保每个用户都有密码认证；当然攻击者给自己的账户加一个md5 hash其实也是非常简单的事。
+
+/etc/groups,查找权限的升级和访问范围的扩大。
+
+/etc/hosts,列出本地DNS条目。
+
+/etc/hosts.equiv,检查信任关系。
+
+~/.rhosts,检查基于用户的信任关系，”++”这种很滥的后门相信大家都知道。
+
+/etc/hosts.allow && /etc/hosts.deny 检查tcpwrapper的规则。
+
+/etc/rc*,检查启动文件。
+
+Crontab文件，列出计划事件。
+
+/etc/inetd.conf,列出端口所监听的服务。
+
+转储系统RAM
+主要是从系统转移/proc/kmem或/proc/kcore文件，该文件以非连续方式包含系统RAM的内容。
+
+深入调查深入调查
+检查系统日志
+UNIX有很多日志，这些为应急响应提供重要的线索。日志文件大多位于公用目录，通常是/var/log,/usr/adm, /var/adm, 有些日志位于禁止访问的/etc目录。具体请参考当前操作体系统文档。其中syslogd守护进程提供非常强大的日志功能，比如装载一个内核模块的登记，其配置文件为/etc/syslog.conf，通常它提供的最有用的日志是：messages,secure,syslog.在syslog.conf中每一行含有三个字段： facility字段表示产生该日志文件的子系统；priority字段表明事件的严重级别；action字段表明如何记录日志，它提供了远程网络记录的能力。TCP wrapper日志也利用syslog记录，其中可能会有telnet,ssh,ftp等远程登录的信息。这些日志中有很多有价值的条目：尝试登陆的时间日期，主机名称，访问的服务类型，以及源IP地址。其他的网络日志比如，web,ftp,sql通常自身都提供了较为详细的信息。Apache默认日志在/usr/local/apache/logs,最有用的日志是access_log,还有 ssl_request_log,ssl_engine_log也能提供有价值的信息。其中可能包含攻击前的扫描记录。
+
+Su命令日志，记录了每一次执行su命令的动作：时间日期，成功与否，终端设备，用户ID.有些UNIX具有单独的su日志，有些则保存在syslog中。
+
+登陆用户日志：utmp或wtmp文件保存了有关当前登陆到系统的用户的信息。此文件根据各UNIX版本的不同，名称及存储位置有所差异。保存的基本信息是用户名，用于登陆的终端以及登陆的时间。文件以二进制格式存储。
+
+查询utmp,wtmp文件应使用适当的客户端，如w,who,finger,last.检索成功，失败与用户名未知的登陆条目。
+
+Cron日志记录了定时作业的内容，通常在/var/log/cron或默认日志目录中一个称为cron的文件里。进程记账，如果系统存在 acct或pacct日志文件，则可使用lastcomm或acctcom命令查看。该日志为二进制文件。 Shell历史记录： [root@ay4z3ro foo]# less ~/.bash_history
+
+如果.bash_history被链接到/dev/null文件，或者环境变量中的$HISTFILE,$HISTFILESIZE两个变量值为0，那么肯定有人非法活动过了。
+
+大多数入侵者都会修改或删除日志，虽然理论上能够做到除种植lkm rootkit之外几乎不留任何痕迹，但在实际入侵中，善后工作实际上是个不小的工程，不仅依赖入侵者对系统的熟知程度，而且当处理过多繁琐的内容时，疏忽很容易出现。比如:刚得到rootshell时 unset HISTFILESIZE,退出时忘了复原，留下一条痕迹。诸如此类的例子还有很多，日志清除工具是死的，它只会清除预定义的项目，虽然你也能修改源码，但那样还是不能随机应变。最保险的方法就是手工劳动，这样就加大了入侵者的负担。出于懒惰，对系统掌握程度不够或是各种各样的原因往往还是会留下一些对我们有价值的东西。所以，检查日志对应急响应来说非常重要。
+
+执行关键字搜索
+无论是对何种操作系统进行应急响应，关键字搜索都是该过程的一部分。针对某个具体事件，可能会有一些ID,phrase与此事件密切相关，执行关键字搜索可以找到更多的信息。关键字可以是很长的ASCII字符串，包括攻击者后门密码，用户名，MAC地址或IP.
+
+例：搜索整个文件系统中包含”ay4z3ro”字符串大小写形式的所有文件：
+
+[root@ay4z3ro foo]# grep Cr Ci ay4z3ro / strings命令用于显示文件中的可打印字符，例: srings /bin/login用于显示login后门中的密码（未加密的明文，编码或加密后的散列）。Find命令用于寻找匹配常规表达式的任何文件名。例：在整个文件系统中搜索名为”…”的文件或目录：
+
+[root@ay4z3ro foo]# find / -name “\.\.\.” Cprint
+
+此外find命令可以匹配的特征还包括：修改访问时间，文件所有者，文件内的字符串，文件名的字符串等。Find命令的-exec选项与grep,strings结合使用体现了unix的天才气质，那样干起活来非常方便。
+
+确定突发事件时间
+*如果有IDS，确保IDS系统时间与受害系统时间一致。
+
+*检索系统中突发事件前后创建和被改动的文件，可能会有惊喜地发现。
+
+恢复被删除的文件和数据
+这个过程需要操作者对unix/linux文件系统的体系结构有所了解，这里并不打算去介绍文件系统的数据结构及其代码的实现，而是简单的说明一下，删除一个文件其实只是将inode节点的部分数据和指针置0，在下次数据覆盖以前并没有将节点指向的数据块的内容删除。要想恢复删除的文件，需要使用inode节点的信息重建文件大小和数据块列表。找到文件节点信息：
+
+[root@ay4z3ro foo]# ls Ci /tmp/x.d
+
+82241 /tmp/x.d
+
+表明/tmp/x.d位于82241节点。
+
+TCT(The Coroner"s Toolkit)是一个非常有用的工具包，其中的icat可以查看指定节点上文件的全部内容。
+
+[root@ay4z3ro TCT]# ./icat /dev/hda5 82241
+
+如果程序还在运行，可以使用lsof命令引用NODE栏查找节点信息。
+
+恢复一个文件只需要：
+
+[root@ay4z3ro TCT]# ./icat /dev/hda5 NODE > some.recovery
+
+TCT中还有很多有用的工具，例：
+
+[root@ay4z3ro TCT]# ./ils CA /dev/hda5 　 grep “　501　”
+
+以上命令行找出与UID=501用户有关的所有被删除的文件。
+
+TCT链接:http://www.fish.com/forensics/
+
+检查特殊文件
+SUID和SGID文件：
+
+[root@ay4z3ro /]# find / -type f ( -perm -04000 -o -perm -02000 ) -exec ls -lg {}
+
+从中查找那些原本不含有S位的，不寻常的或是被放在一个奇怪地方的S位程序。把/bin/ksh改名后放在/tmp(777)目录下就是一种后门。
+
+不常用的和隐藏的文件及目录：
+
+UNIX系统中以”.”开头的文件都是隐藏的，如果ls不加”-a”参数就不会出现在文件列表里。
+
+用隐藏字符对目录进行重命名是一种黑客技巧，比如有的文件名是这样的：”.^T”,”… “(注意三个点后面有个空格)……
+
+这可以欺骗很多系统管理员。
+
+怎么办呢？如下：
+
+[root@ay4z3ro foo]# ls Cal “　 cat Ctve”
+
+cat命令的参数让其显示非打印字符，显示制表符并在每个结尾放置一个$,所以以上目录会显示为：”.^T$”,”… $”。
+
+要进入前一个目录在T之前按下CTRL+V,而不是用^符号，进入后一个目录则是：[root@ay4z3ro foo]# cd “… “
+
+配置文件：
+一个攻击者如果拥有相当熟练的系统管理技能，偷梁换柱，在配置文件中做点手脚是很轻而易举的事。比如修改或添加/etc/services, /etc/inetd.conf，不过对于熟练的系统管理员来说，这样的后门很容易发现。还有就是某些exploit的副产品，比如那个 Solaris2.6的Sadmind RPC远程溢出，默认的攻击程序就是溢出后在/etc/inetd.conf
+
+添加一句伪造ingreslock服务把/bin/sh绑定在1524端口。水平差的攻击者通常不会注意这个问题。
+
+启动文件：
+上面的inetd.conf就是这类文件，除此之外还有cron文件，目录/var/spool/cron,/usr/spool/cron 用来为不同用户保存cron作业。该目录中的文件以用户帐号命名，并且其中的任务以该用户特权运行。此目录下的root文件应该是我们关注的。有人喜欢在半夜启动木马运行一个bindshell，然后过几个小时又把开放的端口关闭。
+
+/etc/rc*是开机自动运行脚本，也经常被攻击者利用。剩下的还有用户启动文件，如login,profile, .bashrc, .cshrc, .exrc可能被插入特洛伊语句，在apache.org被入侵的事件中就曾被利用过。
+
+/tmp目录：
+/tmp目录的权限默认是777，这是攻击者经常利用的地方，很多黑客工具也利用此目录存储中间文件，如果攻击者不小心，就会在此留下尾巴。
+
+检查用户帐号和组
+有些账号是为系统而设，本来没有shell，也不能登陆，攻击者可能会利用这点。刚学习UNIX入侵没多久的人可能会这样:
+
+echo “aya:x:0:0:intruder!!:/:/bin/sh”>>/etc/passwd,更有可怜的家伙因为少了一个”>”而破坏了passwd文件，弄得自己都无法登陆?,真见过这样的家伙，说实话我自己也干过，不过是发生在自己的Linux上，所以没有铸成大错。老练的不会这样做，他们可能会从一堆用户中挑出一个不起眼的，然后占为己有，远程合法登录取得shell后本地再升级为root. 我相信这个问题对我们来说很好解决。
+
+识别非法进程
+监听服务和运行进程相关的二进制文件都应该检查，查看/etc/inetd.conf时可能会发现合法的服务在合法的端口监听，但是那个进程的二进制文件可能是被替换过的，所以先要确保正在运行的不是rootkit(lrk4,lrk5……)
+
+[root@ay4z3ro tool]# ./chkrootkit chkrootkit是一个用于检查完整性的工具，如果之前用过tripwire，则可以用tripwire校验。或者用rpm自身的MD5校验和功能。
+
+勘查系统弱点
+检查各服务，应用程序，内核及补丁的版本，对照bugtraq上已知的漏洞列表，查找系统弱点，从正面挖掘潜在的和可能被忽略漏洞。这要求响应人员具有一个职业入侵者的相关技能！试图扮演一个入侵者也能从中发掘对方是如何进入系统的。
+
+分析信任关系
+首先UNIX中的信任关系一度成为被攻击的弱点。其次，如果该关系被利用，那么受害范围将扩大，此时受信任的系统也被认为是不安全的，并将其同时列入响应对象的范围。
+
+分析黑客工具
+如果很有幸的，入侵者留下了或者是我们用某种聪明的办法恢复了入侵者在活动过程中使用的工具，代码，就可以对其进一步分析。如果是源代码，直接拿过来就能读（当然是LKM RootKit的源码最好，呵呵）。不熟练的家伙甚至把原来的工具比如sniffit名字都不改就运行了，这样的就比较好对付。
+
+如果我们得到的是一个正在运行进程的二进制文件的副本，可以使用gdb等调试器反汇编，跟踪调试。但是如果一个极具水准的攻击者这样编译他的程序：
+
+[root@ay4z3ro evil]# gcc CO4 evil.c Co evil用-O4参数优化编译后会减少指令，然后用strip去掉二进制文件中的符号信息：
+
+[root@ay4z3ro evil]# strip ./evil 这样我们的工作就会变得非常困难。 File命令可以显示文件的类型信息，是否被strip过等。Strings命令可以用来显示可执行文件中的ASCII字符串,比如一个本地缓冲区溢出exploit中由printf （）语句控制的行，出错处理的消息，默认的-h参数的返回信息等。此外还有可能得到函数，变量名，编译之前所用的文件名，创建该文件的编译器版本等，通过这些关键字进行在线搜索就有可能找到该工具的源码。
+
+同样我们可以对二进制文件进行动态分析，用strace工具跟踪系统调用。strace显示了文件执行时所产生的文件访问，网络访问，内存访问和许多其它的系统调用信息。通常通过观察关键的系统调用我们大致能确定该程序作了什么。由此重构该文件的运行情景也是可能的。strace给我们提供了极大的方便,在整个响应过程中，我们还可以利用它做很多事情。
+
+后话
+应急响应并不需要完全遵循固定的模式，思路新颖可以适度发挥，如果遇到的对手是水平极高的攻击者，应该适当改变策略，为了安全起见，最后重装系统或许也是必要的。

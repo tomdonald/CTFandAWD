@@ -1,0 +1,232 @@
+UNIX系统下的应急响应工具介绍
+整个文章分三个系列介绍对于 OpenBSD, Linux, 或者Solaris系统的应急响应和取证过程中有用的工具。本部份聚焦在系统工具上，第二部份主要是介绍文件系统工具，最后部分则主要是网络工具。本文用到的都是基于 OpenBSD 3.2, Debian GNU/Linux 3.0 (woody), RedHat 8.0 (psyche), and Solaris 9 (aka Solaris 2.9 or SunOS 5.9)的。
+
+依赖于你所使用的操作系统，本文讨论的许多软件可能不是默认安装的。这种情况下，请根据文章后面的参考部分获得这些工具。
+
+The Soapbox
+那些可以用来处理入侵威胁的工具不在本系列讨论内容中，本文只覆盖在入侵发生之后使用的工具。入侵通常是可以防止的。使用一些比如保证系统更新安装最新补丁的技术，按照最小化服务配置系统，使用设计为安全的操作系统，使用能够加固系统的核心补丁等等，这些来防范入侵的技术可能让你根本就从来不会使用在本系列文章中介绍到的这些工具。
+
+读者应该命令，一旦攻击者获得了系统控制权，这个系统就基本不应该被信任。我们讨论的工具多数都操作在用户方式。一个欺骗的核心模块可能不会让你正常地检查系统，比如，这个系统已经被入侵的情况下。这些欺骗的模块会采用多种办法来隐藏自己，比如根据系统设计来让自己在系统运行的时候不能轻易检测到。这意味着，你不应该相信你使用的那些工具的输出结果。这意味着在响应入侵事件中，应该采取怀疑、研究和谨慎的方式。
+
+你用于分析系统的工具应该是你可以去信任，而且没有被修改的。下面讨论了一些技术，比如将工具保存在离线的只读介质中，这样，你就更可以信赖，而不是那些在已经被入侵的系统上的二进制程序。
+
+你已经做了所有正确的事情，可以进行下面的一些练习，你的系统已经被入侵了。现在怎么办呢？
+
+Breaking Out the Toolbelt
+现在首先应该检查那些我们后面需要用到的工具。这里不说man(1)提供的信息，特别是因为命令参数因为系统不同而不同。检查这样的信息是留给读者的一种练习。
+
+vmstat - 这是可以快速察看内存、CPU和磁盘子系统的命令。vmstat 通常执行一个短时间，以便可以察看子系统利用的趋势。vmstat 经常可以在系统性能有一些问题的时候帮助我们知道哪些地方应该去深究。
+
+mpstat - 这个命令在Linux和Solaris上都有，可以用它察看处理器利用的统计。mpstat 提供一个选项，允许在多处理器系统中察看指定CPU的统计。vmstat 没有这个功能。
+
+iostat - 显示比vmstat更详细的跟子系统相关的统计信息。
+
+sar,sa,lastcomm,last - 这些是检查历史数据和一些近来的系统事件。sar是一个Solaris和Linux的系统性能分析工具。这些可以用于检查的性能数据类似于vmstat, mpstat和 iostat的显示。 sar的数据是一段时间保存的内容，因此可以察看过去的信息。 lastcomm可以现在系统最近被执行的命令。这些可以用在系统审计中。sa 可以在*BSD和Linux中找到，它给用户在系统审计中更多的选项来收集信息。
+
+ps - 立足于进程状态，用于显示系统执行的进程和他们的信息。
+
+top - 显示的信息同ps接近，但是top可以了解到CPU消耗，可以根据用户指定的时间来更新显示。
+
+lsof - 列举打开的文件，显示系统当前打开的所有文件。Unix系统的所有东西几乎都可以看作是文件，因此lsof也显示了系统的状态中有重要意义的内容。
+
+file - 判断文件是什么，不同的文件格式可以16进制的形式现实文件的内容
+
+readelf - 显示二进制文件的ELF（可执行链接和格式）头的细节。这些内容可以判断可执行提供的函数。
+
+od - 以用户指定的格式输出文件内容。od对于在文件内容中有一些解释的情况下察看原始内容是有帮助的。
+
+ldd - 读取ELF头的内容，并显示可执行文件依赖的对象库。
+
+string - 现实文件中的ASCII字符串。对于在二进制文件中查找其中可读的字符串是非常有用处的。
+
+find - 用于在文件系统中查找指定的对象。
+
+strace - 这个工具开始或者附加到一个当前运行的进程中，显示这个进程所作的所有系统调用。这可以用来判断程序运行的行为，并且来决定是否是合适的程序。strace 存在于Linux上。在 Solaris上是truss， *BSD提供的ktrace可以达到相似的功能。
+
+sudo - 可以让管理员给用户以其他用户的权限执行命令的能力，而不用给该用户密码。
+
+grep - 用于按照用户指定的模式查询。 grep用匹配规则。
+
+less - 页面调度程序，用来按页显示文本。
+
+在参考部分中的"CD-ROM and Floppy distributions"[3]中，一些站点介绍了怎么编译这些工具以便用于不同的操作系统，并放置在CD-ROM。现在，开始检查运行的系统了。
+
+运气就是在机会面前有所准备
+
+运气对于技术来说，并不是可求解的。攻击者可以采用很多方法来危及OS的安全。威胁系统安全的漏洞可能是OS提供商，也可以是那些应用软件。当漏洞还没有大面积公布，或者还没有让它的相关提供商自己知道的时候，攻击者已经在IRC里面知道那种系统可以被入侵了。作为一个安全管理员，你必须在这场游戏中表现一直出色。但是，攻击者则只需要一次就足够。
+
+然而，你需要做许多前期的准备工作。你应该有一个应急响应的策略。你必须有一张CD-ROM或者软盘什么的，来存储检查系统中需要的工具，而不是使用被入侵的系统中的工具。如果正使用软盘，让他们处于写保护模式，你可以在取证[5]中获得非常优秀的资源。
+
+现在回到机器上。把事件响应的日期和时间都纪录在记录本上。并且纪录采取的每一步的所有细节和时间。装载CD-ROM或者软盘，并且使用纪录在这些介质上的软件，紧记按照易失性的顺序[6]保存相关的信息到安全的地方。
+
+按照易失性顺序的重要原因是因为入侵事件发生后与之相关信息的数量和自量都将随时间增加而迅速减少。那些经验丰富的攻击者制造的事件则可能让曲线更陡，下降速度更快。
+
+了解自己
+
+可能在入侵事件之前，你已经在系统上花费了大量时间。你了解这些系统的里里外外，进行了相当多的文档工作，并且做了备份。在系统上，开启了进程审计（或者*BSD的系统审计），进行了系统实时数据（sadc[8]）来保存系统的性能数据。管理日志的时候，可能没有足够的空间来频繁存储这些数据，你可以发送syslog数据到安全的日志服务器上。
+
+你接到webmaster的电话，他发现某个web服务器上CPU负载很高，而这个服务器每天的浏览量仅仅几千而已。webmaster确信服务器存在有什么问题。
+
+vmstat 和 mpstat (只在*BSD系统上) 表明CPU被用户空间的一个或者多个进程消耗掉了，但是内存和I/O子系统还没有大量使用。 iostat 也显示出磁盘系统不正常。
+
+$ vmstat 1 4
+
+procs memory swap io system cpu
+
+r b w swpd free buff cache si so bi bo in cs us sy id
+
+1 0 0 376 7756 29772 570960 0 0 7 3 441 397 87 5 8
+
+5 0 0 376 6728 29772 570960 0 0 0 0 498 1249 100 0 0
+
+6 0 0 376 7240 29772 570960 0 0 0 0 652 1563 97 3 0
+
+6 0 0 376 7604 29772 570960 0 0 0 0 536 1323 97 3 0
+
+$ mpstat 1 4
+
+20:51:21 CPU %user %nice %system %idle intr/s
+
+20:51:22 all 100.00 0.00 0.00 0.00 479.00
+
+20:51:23 all 100.00 0.00 0.00 0.00 496.00
+
+20:51:24 all 100.00 0.00 0.00 0.00 499.00
+
+20:51:25 all 97.00 0.00 3.00 0.00 481.00
+
+Average: all 98.00 0.60 1.40 0.00 486.60
+
+$ iostat -dk 1 4
+
+Device: tps Blk_read/s Blk_wrtn/s Blk_read Blk_wrtn
+
+dev3-0 0.00 0.00 0.01 73 1296
+
+dev3-0 0.00 0.00 0.00 0 0
+
+dev3-0 0.00 0.00 0.00 0 0
+
+dev3-0 0.00 0.00 0.00 0 0
+
+sar (*BSD的sa) 显示CPU从早些晚上 03:17 就开始被使用。 lastcomm 显示FTP客户端在03:17以root运行了几次， last 这个命令显示最近的登录，没有显示出这个时间段有 root 从什么地方登录进来。另外，这个服务器又使用 sudo来管理root权限。这里有两个系统管理员账号可以用 root登录，但是他们并没有登录过，特别是在 AM 3这个时间附近。根据这一点，你决定使用CD上准备好的二进制工具。现在运行 top -d1，并且发现apache这个进程占用了100%的CPU。
+
+现在用 grep 检查apche的错误日志，这个GNU工具可以有更多有用的参数，-A, -B和-C 可以让你指定想从哪一个匹配的行的开始，之前或者周围看。 grep可以通过-E 来使用扩展的模式匹配表达式。可以检查系统日志。但是并没有在这些日志里面检查到什么奇怪的地方。
+
+现在继续进行检查。运行 ps -eflcyL （Solaris 9），ps -eflcym --headers （Deb3.0， RH8.0）或者 ps auwxhkwvl（OBSD 3.2）。找到进程 apache，而这一次发现有问题了。这里只有一个apache进程和多个httpd进程。httpd实际上是Apache服务器，因为httpd是在apachectl文件执行的二进制，运行的apache是前派生的，因此，如果二进制文件被重命名为"apache"，那么也应该有多个进程存在。这就是问题所在。
+
+使用 lsof -p <pid>[9] ，发现这个apache进程打开了一个叫 john.pot 的文件。立刻通过google，查询这是一个叫“John the Ripper”的密码破解工具，正是这个东西让CPU满负荷了。
+
+现在来检查这个所谓的apache程序。通过 file apache，表明这个文件是ELF可执行的。现在进行进一步的挖掘，执行 readelf -a apache，确信这是一个ELF可执行程序。 od -xc apache | less 现实ELF魔法数字（7f454c46），ldd显示apache连接的共享对象库比实际的httpd进程小一些，这里面一定有文章：
+
+$ ldd ./apache
+
+libc.so.6 => /lib/libc.so.6 (0x4001f000)
+
+/lib/ld-linux.so.2 => /lib/ld-linux.so.2 (0x40000000)
+
+$ ldd /usr/sbin/httpd
+
+libm.so.6 => /lib/libm.so.6 (0x7002c000)
+
+libcrypt.so.1 => /lib/libcrypt.so.1 (0x700c4000)
+
+libdb.so.2 => /lib/libdb.so.2 (0x70100000)
+
+libdb2.so.2 => /lib/libdb2.so.2 (0x70120000)
+
+libexpat.so.1 => /usr/lib/libexpat.so.1 (0x70180000)
+
+libdl.so.2 => /lib/libdl.so.2 (0x701b4000)
+
+libc.so.6 => /lib/libc.so.6 (0x701c8000)
+
+/lib/ld-linux.so.2 => /lib/ld-linux.so.2 (0x70000000)
+
+执行： strings | grep -i john，显示如下：
+
+$ strings apache | grep -i john
+
+/usr/share/john/password.lst
+
+/etc/john.ini
+
+~/john.pot
+
+/etc/john.ini
+
+john
+
+John the Ripper Version 1.6 Copyright (c) 1996-98 by Solar Designer
+
+/etc/john.ini
+
+/etc/john.ini
+
+/etc/john.ini
+
+用 strace -fp 'pgrep apache'（Deb3.0, RH8.0）， truss -fp 'pgrep apache'(Sol9)，或者 ktrace -dip <pid> (OBSD 3.2)，来察看apache进程到底在做什么。
+
+# strace -fp pgrep apache
+
+--- SIGALRM (Alarm clock) ---
+
+sigreturn() = ? (mask now [])
+
+--- SIGALRM (Alarm clock) ---
+
+sigreturn() = ? (mask now [])
+
+--- SIGALRM (Alarm clock) ---
+
+sigreturn() = ? (mask now [])
+
+_llseek(4, 65536, [65536], SEEK_SET) = 0
+
+read(4, "\2YUz\0\2Z\0241\0\2ZA1dkmnr\0\2ZDa\0\2ZElnrd"..., 4096) = 4096
+
+read(4, "\2\5Ma\0\2\5Te\0\2\6\n(\0\2\6>%\0\2\10\n&\0\2\10\0210\0"..., 4096) = 4096
+
+read(4, "IPVm\0\2(%L\0\2((H\0\2(/CMRBNTUWcr\0\2(5"..., 4096) = 4096
+
+read(4, "fgq\0\2BCh26o\0\2BDaikmoy\0\2BEanreltc"..., 4096) = 4096
+
+read(4, "ag\0\2N\23l\0\2N\25j\0\2N\0269\0\2N\30f\0\2N!ds\0\2N)"..., 4096) = 4096
+
+read(4, "\0\29LRMTes\0\2:6Z\0\2>&%\0\2?)Cw\0\2_"..., 4096) = 4096
+
+read(4, "%Antv\0\2%Cr\0\2%Dd\0\2%Gg\0\2%Ke\0\2%Lls\0"..., 4096) = 4096
+
+read(4, "rtlpbdgiuv\0\2GBeam\0\2GDuy\0\2GEnert\0"..., 4096) = 4096
+
+read(4, "We6hilw\0\2RYasdpcgilmno\0\2S\0205c\0\2S\21"..., 4096) = 4096
+
+read(4, "68jDxMEBTIRNLAGSKCPOqVHFUZWJ$%#^"..., 4096) = 4096
+
+read(4, "\0022In\0\0022Ke\0\0022LiEe\0\0022Ma\0\0022NEe\0\0022P"..., 4096) = 4096
+
+read(4, "I5y\0\2I6e\0\2I7ae\0\2IAnmrs9t67dhlpuz"..., 4096) = 4096
+
+read(4, "Eprylsenbu9ak013ft!Lcox\0\2SFi9aey"..., 4096) = 4096
+
+read(4, "o149dlytwMbckr0u\0\2_Xixae01537926"..., 4096) = 4096
+
+read(4, "2\0\2-!NCLS\0\2-%RS\0\2-)ETDNS\0\2--M\0\2-"..., 4096) = 4096
+
+read(4, "!*bfgk\0\2GJu\0\2GLeiayYs\0\2GMaAoegu\0"..., 4096) = 4096
+
+read(4, "Utsdbgmpy\0\2PWa\0\2PXy\0\2PY1!27sy.05"..., 4096) = 4096
+
+read(4, "w!9bAjp5clgkr068EFSYf$.?CJKLW]n\0"..., 4096) = 4096
+
+--- SIGALRM (Alarm clock) ---
+
+sigreturn() = ? (mask now [])
+
+用 grep -n 在John the Ripper的源代码中找到在 crk_password_loop()函数中有一个叫 sig_timer_emu_tick()的函数，它在timer_emu_max到达之后产生 SIGALRM。这就是 strace 显示的SIGALRM。通过 lsof -p 'pgrep apache'来检查哪个文件同读的文件描述符fd 4在读取数据，以及fd 4相关联的叫all.chr的文件。察看 john.ini 文件，找到所引用的 all.chr 文件。
+
+所有迹象表明，这的确是一个密码破解工具， John the Ripper。因此，无论是你还是其他的任何管理员安装了这个工具，它运行起来的时候，就会好像web 服务器被入侵了。
+
+结论
+
+在下一篇文章中，我们会继续进行研究在Webserver使用文件系统工具的时候到底发生了什么事情。记住，面对任何威胁最好的准备是做好预防。当入侵真正发生的时候，你要做很多工作去了解你的系统，设置策略，和实施应急响应的技术，你的优势越明显，那么控制和根除威胁就更能实现。
